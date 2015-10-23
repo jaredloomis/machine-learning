@@ -18,11 +18,15 @@ solutionY (_ :=> b) = b
 
 -- Decision Trees --
 
+-- | An attribute is something that
+--   can be used to categorize things
 data Attr a = Attr {
+    -- | Attribute name
     attrName :: !String,
-    -- attrTest :: a -> Bool
+    -- | Attribute categories
     attrTests :: [(String, a -> Bool)]
     }
+
 instance Show (Attr a) where
     show = show . attrName
 instance Eq (Attr a) where
@@ -61,12 +65,12 @@ applyTree (Node attr children) x =
 
 growTree :: [Attr a] -> Training a Bool -> DTree a
 growTree = flip growTree' False
-
-growTree' :: [Attr a] -> Bool -> Training a Bool -> DTree a
-growTree' attrs@(_:_) _ train =
-    let xj = bestAttr train attrs
-    in applyAttr (growTree' $ delete xj attrs) xj train
-growTree' _ def _ = Leaf def
+  where
+    growTree' :: [Attr a] -> Bool -> Training a Bool -> DTree a
+    growTree' attrs@(_:_) _ train =
+        let xj = bestAttr train attrs
+        in applyAttr (growTree' $ delete xj attrs) xj train
+    growTree' _ def _ = Leaf def
 
 applyAttr :: forall a.
             (Bool -> Training a Bool -> DTree a) ->
@@ -75,7 +79,7 @@ applyAttr :: forall a.
              DTree a
 applyAttr grow attr train
     | isLeaf    = Node attr $ map (Leaf . not . null) grouped
-    | otherwise = Node attr $ map (grow False) grouped
+    | otherwise = Node attr $ map (grow False)        grouped
   where
     isLeaf :: Bool
     isLeaf = (<= 1) . length . filter (not . null) $ grouped
@@ -85,9 +89,10 @@ applyAttr grow attr train
                   (attrTests attr)
 
 sortAttrs :: Training a Bool -> [Attr a] -> [Attr a]
+sortAttrs _     []    = []
 sortAttrs train attrs =
     let best = bestAttr train attrs
-    in sortAttrs train (delete best attrs)
+    in best : sortAttrs train (delete best attrs)
 
 bestAttr :: forall a. Training a Bool -> [Attr a] -> Attr a
 bestAttr train = foldr1 best
@@ -115,6 +120,27 @@ entropy as = negate . sum . map value . group . sort $ as
 
 --- TEST
 
+data House = House {
+    housePrice :: Int,
+    houseFeet  :: Int
+    }
+
+houses :: [House]
+houses = zipWith House prices squareFeet
+
+prices :: [Int]
+prices = [385000, 309000, 316000, 149900, 850000, 259900, 799888, 1785, 330000, 409999, 749950, 259000, 475000, 925000, 380000, 395000, 365000, 314526, 585000, 399900, 475000, 439900, 87500, 375000, 235000, 162000, 2950, 115000, 299900]
+
+squareFeet :: [Int]
+squareFeet = [1400, 1040, 1042, 1296, 2320, 1548, 1831, 6709, 1514, 2301, 3532, 2016, 3046, 3303, 2017, 1338, 3064, 785, 2828, 2153, 2472, 2156, 1145, 1816, 1612, 884, 3662, 1098, 1183]
+
+houseAttrs :: [Attr House]
+houseAttrs =
+    []
+
+
+
+{-
 data Sex = Male | Female deriving (Show, Eq)
 
 data Patient = Patient {
@@ -164,4 +190,5 @@ cancerTree :: DTree Patient
 cancerTree = growTree patientAttrs patients
 
 iHaveCancer :: Bool
-iHaveCancer = cancerTree `applyTree` Patient Male 60 210
+iHaveCancer = cancerTree `applyTree` Patient Male 14 110
+-}
