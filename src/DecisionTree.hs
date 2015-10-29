@@ -1,22 +1,22 @@
-{-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeOperators #-}
 module DecisionTree where
 
 import Data.List
+import Data.Maybe (listToMaybe)
+import Control.Monad (join)
 
 type Training a b = [a :=> b]
 
 -- | A solution
-data a :=> b = a :=> b
+data a :=> b = !a :=> !b
   deriving (Show, Eq)
 infixr 1 :=>
 
-solutionX :: a :=> b -> a
-solutionX (a :=> _) = a
-solutionY :: a :=> b -> b
-solutionY (_ :=> b) = b
-
--- Decision Trees --
+datum :: a :=> b -> a
+datum (a :=> _) = a
+label :: a :=> b -> b
+label (_ :=> b) = b
 
 -- | An attribute is something that
 --   can be used to categorize things
@@ -32,70 +32,45 @@ instance Show (Attr a) where
 instance Eq (Attr a) where
     x == y = attrName x == attrName y
 
-data DTree a =
-    Node !(Attr a) ![DTree a]
-  | Leaf !Bool
-  deriving (Eq)
+data DTree a b =
+    Node !(Attr a) ![DTree a b]
+  | Leaf !(Maybe b)
+  deriving (Show, Eq)
 
-instance Show a => Show (DTree a) where
-    show = showI 0
-      where
-        showI :: Show a => Int -> DTree a -> String
-        showI i (Leaf x) = tabs i ++ show x ++ "\n"
-        showI i (Node a xs) =
-            tabs i ++ show a ++
-            " {\n" ++
-            concatMap (showLine $ i+1) (zip xs . map fst $ attrTests a) ++
-            tabs i ++ "}\n"
-
-        showLine :: Show a => Int -> (DTree a, String) -> String
-        showLine i (tree, name) =
-            tabs i ++ show name ++ " =>\n" ++ showI (i+1) tree
-
-        tabs :: Int -> String
-        tabs i = replicate (i*4) ' '
-
-applyTree :: DTree a -> a -> Bool
+applyTree :: DTree a b -> a -> Maybe b
 applyTree (Leaf a) _ = a
 applyTree (Node attr children) x =
-    flip applyTree x .
-    fst . head .
+    join . fmap (flip applyTree x . fst) .
+    listToMaybe .
     filter (($ x) . snd . snd) $
     zip children (attrTests attr)
 
-growTree :: [Attr a] -> Training a Bool -> DTree a
-growTree = flip growTree' False
-  where
-    growTree' :: [Attr a] -> Bool -> Training a Bool -> DTree a
-    growTree' attrs@(_:_) _ train =
-        let xj = bestAttr train attrs
-        in applyAttr (growTree' $ delete xj attrs) xj train
-    growTree' _ def _ = Leaf def
-
-applyAttr :: forall a.
-            (Bool -> Training a Bool -> DTree a) ->
-             Attr a ->
-             Training a Bool ->
-             DTree a
-applyAttr grow attr train
-    | isLeaf    = Node attr $ map (Leaf . not . null) grouped
-    | otherwise = Node attr $ map (grow False)        grouped
+growTree :: forall a b. Ord b => [Attr a] -> Training a b -> DTree a b
+growTree []    []       = Leaf Nothing
+growTree []    training = Leaf $ mostCommonLabel training
+growTree attrs training
+    | isLeaf    = Node best $ map (Leaf . mostCommonLabel) grouped
+    | otherwise = Node best $ map (growTree attrs')        grouped
   where
     isLeaf :: Bool
     isLeaf = (<= 1) . length . filter (not . null) $ grouped
 
-    grouped :: [Training a Bool]
-    grouped = map (\(_, testAttr) -> filter (testAttr . solutionX) train)
-                  (attrTests attr)
+    grouped :: [Training a b]
+    grouped = groupTraining best training
 
-sortAttrs :: Training a Bool -> [Attr a] -> [Attr a]
-sortAttrs _     []    = []
-sortAttrs train attrs =
-    let best = bestAttr train attrs
-    in best : sortAttrs train (delete best attrs)
+    attrs' :: [Attr a]
+    attrs' = delete best attrs
 
-bestAttr :: forall a. Training a Bool -> [Attr a] -> Attr a
-bestAttr train = foldr1 best
+    best :: Attr a
+    best = bestAttr training attrs
+
+groupTraining :: Ord b => Attr a -> Training a b -> [Training a b]
+groupTraining attr training =
+    map (\(_, testAttr) -> filter (testAttr . datum) training)
+        (attrTests attr)
+
+bestAttr :: forall a b. Ord b => Training a b -> [Attr a] -> Attr a
+bestAttr training = foldr1 best
   where
     best :: Attr a -> Attr a -> Attr a
     best a b
@@ -107,10 +82,10 @@ bestAttr train = foldr1 best
 
     entropies :: Attr a -> [Double]
     entropies =
-        let applyTest attrTest = map (attrTest . solutionX) train
+        let applyTest attrTest = map (attrTest . datum) training
         in map (entropy . applyTest . snd) . attrTests
 
-entropy :: [Bool] -> Double
+entropy :: Ord a => [a] -> Double
 entropy as = negate . sum . map value . group . sort $ as
   where
     value g =
@@ -118,77 +93,70 @@ entropy as = negate . sum . map value . group . sort $ as
         in p * logBase 2 p
     flength g = fromIntegral $ length g
 
---- TEST
+mostCommonLabel :: Ord b => Training a b -> Maybe b
+mostCommonLabel = mostCommon . map label
 
-data House = House {
-    housePrice :: Int,
-    houseFeet  :: Int
-    }
+-- | Most Common element in list
+mostCommon :: Ord a => [a] -> Maybe a
+mostCommon [] = Nothing
+mostCommon xs =
+    Just . bestVal . foldl f (BestRun (head xs) 1 (head xs) 1) . sort $ xs
+  where
+    f :: Eq a => BestRun a -> a -> BestRun a
+    f (BestRun current occ best bestOcc) x
+        | x == current  = BestRun current (occ + 1) best bestOcc
+        | occ > bestOcc = BestRun x 1 current occ
+        | otherwise     = BestRun x 1 best bestOcc
 
-houses :: [House]
-houses = zipWith House prices squareFeet
-
-prices :: [Int]
-prices = [385000, 309000, 316000, 149900, 850000, 259900, 799888, 1785, 330000, 409999, 749950, 259000, 475000, 925000, 380000, 395000, 365000, 314526, 585000, 399900, 475000, 439900, 87500, 375000, 235000, 162000, 2950, 115000, 299900]
-
-squareFeet :: [Int]
-squareFeet = [1400, 1040, 1042, 1296, 2320, 1548, 1831, 6709, 1514, 2301, 3532, 2016, 3046, 3303, 2017, 1338, 3064, 785, 2828, 2153, 2472, 2156, 1145, 1816, 1612, 884, 3662, 1098, 1183]
-
-houseAttrs :: [Attr House]
-houseAttrs =
-    []
+data BestRun a = BestRun {
+   currentVal :: a,
+   occurrences :: Int,
+   bestVal :: a,
+   bestOccurrences :: Int
+}
 
 
+-- TESTING
 
-{-
-data Sex = Male | Female deriving (Show, Eq)
+data Grade = F | D | C | B | A
+  deriving (Show, Eq, Ord)
 
-data Patient = Patient {
-    patientSex    :: Sex,
-    patientAge    :: Int,
-    patientWeight :: Float
+data Person = Person {
+    personAge :: Int,
+    personSex :: Sex
     } deriving (Show, Eq)
 
-patients :: Training Patient Bool
-patients =
-    [Patient Male   50 170 :=> False,
-     Patient Male   60 200 :=> True,
-     Patient Female 24 120 :=> False,
-     Patient Female 54 160 :=> True,
-     Patient Female 57 155 :=> True,
-     Patient Male   30 145 :=> False,
-     Patient Male   12 100 :=> False,
-     Patient Male   21 160 :=> False,
-     Patient Female 30 150 :=> True]
+data Sex = Male | Female
+  deriving (Show, Eq)
 
-patientAttrs :: [Attr Patient]
-patientAttrs =
-    -- Sex
-    [Attr "Sex" 
-        [("Male",  (== Male) . patientSex),
-         ("Female",(/= Male) . patientSex)],
-    -- Age
-     Attr "Age"
-        [("Age group 1", between 0  20  . patientAge),
-         ("Age group 2", between 20 40  . patientAge),
-         ("Age group 3", between 40 60  . patientAge),
-         ("Age group 4", between 60 80  . patientAge),
-         ("Age group 5", between 80 100 . patientAge)],
-    -- Weight
-     Attr "Weight"
-        [("Weight group 1", between 100 120 . patientWeight),
-         ("Weight group 2", between 120 140 . patientWeight),
-         ("Weight group 3", between 140 160 . patientWeight),
-         ("Weight group 4", between 160 180 . patientWeight),
-         ("Weight group 5", between 180 200 . patientWeight),
-         ("Weight group 6", between 200 220 . patientWeight)]]
+myAttrs :: [Attr Person]
+myAttrs =
+    [Attr "Age"
+        [( "0-10", between  0 10 . personAge),
+         ("10-20", between 10 20 . personAge),
+         ("20-30", between 20 30 . personAge),
+         ("30-40", between 30 40 . personAge),
+         ("40-50", between 40 50 . personAge),
+         ("50-60", between 50 60 . personAge)],
+     Attr "Sex"
+        [("Male",   (== Male)   . personSex),
+         ("Female", (== Female) . personSex)]]
   where
-    between :: Ord a => a -> a -> a -> Bool
     between l h x = x >= l && x < h
 
-cancerTree :: DTree Patient
-cancerTree = growTree patientAttrs patients
 
-iHaveCancer :: Bool
-iHaveCancer = cancerTree `applyTree` Patient Male 14 110
--}
+myTraining :: Training Person Grade
+myTraining =
+    [Person age Male   :=> F                       | age <- [0, 3 ..10]] ++
+    [Person age Female :=> F                       | age <- [0, 3 ..10]] ++
+    [Person age Male   :=> iff (age `isDiv` 2) B C | age <- [10,13..20]] ++
+    [Person age Female :=> iff (age `isDiv` 2) C D | age <- [10,13..20]] ++
+    [Person age Male   :=> iff (age `isDiv` 2) A B | age <- [20,26..30]] ++
+    [Person age Female :=> iff (age `isDiv` 2) B C | age <- [20,26..30]] ++
+    [Person age Male   :=> iff (age `isDiv` 2) C D | age <- [30,36..40]] ++
+    [Person age Female :=> iff (age `isDiv` 2) D F | age <- [30,36..40]]
+  where
+    iff b t f = if b then t else f
+    isDiv x m = x `mod` m == 0
+
+myTree = growTree myAttrs myTraining
