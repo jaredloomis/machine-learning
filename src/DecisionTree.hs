@@ -6,9 +6,10 @@ import Data.List
 import Data.Maybe (listToMaybe)
 import Control.Monad (join)
 
+-- | Training data
 type Training a b = [a :=> b]
 
--- | A solution
+-- | A labeled data point
 data a :=> b = !a :=> !b
   deriving (Show, Eq)
 infixr 1 :=>
@@ -22,7 +23,7 @@ label (_ :=> b) = b
 --   can be used to categorize things
 data Attr a = Attr {
     -- | Attribute name
-    attrName :: !String,
+    attrName  :: !String,
     -- | Attribute categories
     attrTests :: [(String, a -> Bool)]
     }
@@ -37,6 +38,7 @@ data DTree a b =
   | Leaf !(Maybe b)
   deriving (Show, Eq)
 
+-- | Use decision tree to label a datum
 applyTree :: DTree a b -> a -> Maybe b
 applyTree (Leaf a) _ = a
 applyTree (Node attr children) x =
@@ -45,16 +47,22 @@ applyTree (Node attr children) x =
     filter (($ x) . snd . snd) $
     zip children (attrTests attr)
 
+-- | Create a decision tree from attributes and training data
 growTree :: forall a b. Ord b => [Attr a] -> Training a b -> DTree a b
 growTree []    []       = Leaf Nothing
 growTree []    training = Leaf $ mostCommonLabel training
 growTree attrs training
+    -- If it's a leaf, label it with most common label
     | isLeaf    = Node best $ map (Leaf . mostCommonLabel) grouped
+    -- Otherwise, recursively grow tree
     | otherwise = Node best $ map (growTree attrs')        grouped
   where
+    -- | It's a leaf if only one (or zero) attribute tests
+    --   have members
     isLeaf :: Bool
     isLeaf = (<= 1) . length . filter (not . null) $ grouped
 
+    -- | Grouped by label
     grouped :: [Training a b]
     grouped = groupTraining best training
 
