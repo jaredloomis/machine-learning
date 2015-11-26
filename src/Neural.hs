@@ -143,13 +143,17 @@ prettyPrint d score =
     show d ++ ": " ++ replicate (round $ 70 * min 1 score) '+'
 
 trainImages :: IO BS.ByteString
-trainImages = decompress <$> BS.readFile "train-images-idx3-ubyte.gz"
+trainImages = decompress <$>
+    BS.readFile "data/train-images-idx3-ubyte.gz"
 trainLabels :: IO BS.ByteString
-trainLabels = decompress <$> BS.readFile "train-labels-idx1-ubyte.gz"
+trainLabels = decompress <$>
+    BS.readFile "data/train-labels-idx1-ubyte.gz"
 testImages :: IO BS.ByteString
-testImages = decompress <$> BS.readFile "t10k-images-idx3-ubyte.gz"
+testImages = decompress <$>
+    BS.readFile "data/t10k-images-idx3-ubyte.gz"
 testLabels :: IO BS.ByteString
-testLabels = decompress <$> BS.readFile "t10k-labels-idx1-ubyte.gz"
+testLabels = decompress <$>
+    BS.readFile "data/t10k-labels-idx1-ubyte.gz"
 
 myMain :: IO ()
 myMain = do
@@ -160,14 +164,15 @@ myMain = do
     testI  <- testImages
     testL  <- testLabels
     -- Smart brain
-    let smart = smartBrain 1 brain trainI trainL
+    let smart = smartBrain 2 brain trainI trainL
     -- Example
     n <- (`mod` testLen) <$> randomIO
     putStrLn . renderImage n =<< testImages
     print $ bestGuess (getX testI n) smart
     -- Summary
     guesses' <- guesses smart testI
-    print . sum $ fromEnum <$> zipWith (==) guesses' (answers testL)
+    putStr . show . sum $ fromEnum <$> zipWith (==) guesses' (answers testL)
+    putStrLn $ "/" ++ show testLen
   where
     trainLen = 15000
     testLen  = 9999
@@ -185,24 +190,15 @@ myMain = do
 
     smartBrain n b trainI trainL =
       foldl'
-        (\br -> const $ foldl' (\b' n -> learn (getX trainI n) (getY trainL n) b')
-               br
-               [0..trainLen])
+        (\br -> const $ foldl'
+            (\b' n -> learn (getX trainI n) (getY trainL n) b')
+            br
+            [0..trainLen])
         b
         [1..n]
 
     renderImage n testI = unlines $
         take 28 $ take 28 <$> iterate (drop 28) (render <$> getImage testI n)
-{-
-        foldl'
-            (foldl' (\b n -> learn (getX trainI n) (getY trainL n) b))
-            b
-            [[   0.. 999],
-             [1000..2999],
-             [3000..5999],
-             [6000..9999]]
--}
-    
 
 mainNeural :: IO ()
 mainNeural = do
