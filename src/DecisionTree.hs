@@ -1,46 +1,29 @@
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE TypeOperators       #-}
+{-# LANGUAGE DeriveFunctor       #-}
 module DecisionTree where
 
 import Data.List
 import Data.Maybe (listToMaybe)
 import Control.Monad (join)
+import Control.DeepSeq
 
--- | Training data
-type Training a b = [a :=> b]
+import qualified Data.Text as T
 
--- | A labeled data point
-data a :=> b = !a :=> !b
-  deriving (Show, Eq)
-infixr 1 :=>
-
-datum :: a :=> b -> a
-datum (a :=> _) = a
-label :: a :=> b -> b
-label (_ :=> b) = b
-
--- | An attribute is something that
---   can be used to categorize things
-data Attr a = Attr {
-    -- | Attribute name
-    attrName  :: !String,
-    -- | Attribute categories
-    attrTests :: [(String, a -> Bool)]
-    }
-
-instance Show (Attr a) where
-    show = show . attrName
-instance Eq (Attr a) where
-    x == y = attrName x == attrName y
+import Attr
 
 data DTree a b =
     Node !(Attr a) ![DTree a b]
   | Leaf !(Maybe b)
-  deriving (Show, Eq)
+  deriving (Show, Eq, Functor)
+
+instance NFData b => NFData (DTree a b) where
+    rnf (Node attr xs) = rnf attr `seq` rnf xs
+    rnf (Leaf lbl)     = rnf lbl
 
 -- | Use decision tree to label a datum
 applyTree :: DTree a b -> a -> Maybe b
-applyTree (Leaf a) _ = a
+applyTree (Leaf lbl)           _ = lbl
 applyTree (Node attr children) x =
     join . fmap (flip applyTree x . fst) .
     listToMaybe .
@@ -108,7 +91,7 @@ mostCommonLabel = mostCommon . map label
 mostCommon :: Ord a => [a] -> Maybe a
 mostCommon [] = Nothing
 mostCommon xs =
-    Just . bestVal . foldl f (BestRun (head xs) 1 (head xs) 1) . sort $ xs
+    Just . bestVal . foldl' f (BestRun (head xs) 1 (head xs) 1) . sort $ xs
   where
     f :: Eq a => BestRun a -> a -> BestRun a
     f (BestRun current occ best bestOcc) x
@@ -117,54 +100,8 @@ mostCommon xs =
         | otherwise     = BestRun x 1 best bestOcc
 
 data BestRun a = BestRun {
-   currentVal :: a,
-   occurrences :: Int,
-   bestVal :: a,
-   bestOccurrences :: Int
-}
-
-
--- TESTING
-
-data Grade = F | D | C | B | A
-  deriving (Show, Eq, Ord)
-
-data Person = Person {
-    personAge :: Int,
-    personSex :: Sex
-    } deriving (Show, Eq)
-
-data Sex = Male | Female
-  deriving (Show, Eq)
-
-myAttrs :: [Attr Person]
-myAttrs =
-    [Attr "Age"
-        [( "0-10", between  0 10 . personAge),
-         ("10-20", between 10 20 . personAge),
-         ("20-30", between 20 30 . personAge),
-         ("30-40", between 30 40 . personAge),
-         ("40-50", between 40 50 . personAge),
-         ("50-60", between 50 60 . personAge)],
-     Attr "Sex"
-        [("Male",   (== Male)   . personSex),
-         ("Female", (== Female) . personSex)]]
-  where
-    between l h x = x >= l && x < h
-
-
-myTraining :: Training Person Grade
-myTraining =
-    [Person age Male   :=> F                       | age <- [0, 3 ..10]] ++
-    [Person age Female :=> F                       | age <- [0, 3 ..10]] ++
-    [Person age Male   :=> iff (age `isDiv` 2) B C | age <- [10,13..20]] ++
-    [Person age Female :=> iff (age `isDiv` 2) C D | age <- [10,13..20]] ++
-    [Person age Male   :=> iff (age `isDiv` 2) A B | age <- [20,26..30]] ++
-    [Person age Female :=> iff (age `isDiv` 2) B C | age <- [20,26..30]] ++
-    [Person age Male   :=> iff (age `isDiv` 2) C D | age <- [30,36..40]] ++
-    [Person age Female :=> iff (age `isDiv` 2) D F | age <- [30,36..40]]
-  where
-    iff b t f = if b then t else f
-    isDiv x m = x `mod` m == 0
-
-myTree = growTree myAttrs myTraining
+    currentVal      :: a,
+    occurrences     :: !Int,
+    bestVal         :: a,
+    bestOccurrences :: !Int
+    }
