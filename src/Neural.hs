@@ -1,11 +1,15 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE NoMonomorphismRestriction #-}
+{-# LANGUAGE MonadComprehensions #-}
+{-# LANGUAGE FlexibleContexts #-}
 module Neural where
 
 import Codec.Compression.GZip (decompress)
 import qualified Data.ByteString.Lazy as BS
 
+import Control.DeepSeq
 import Control.Monad
 import Data.Ord
 import Data.List
@@ -14,24 +18,26 @@ import System.Random
 import Data.Word (Word8)
 import GHC.Int (Int64)
 
+import qualified Data.Vector as V
+
 newtype Brain = Brain {
-    brainLayers :: [Layer]
-    }
+    brainLayers :: V.Vector Layer
+    } deriving (Show, Eq)
 data Layer = Layer {
-    layerBiases  :: Biases,
-    layerWeights :: Weights
-    }
+    layerBiases  :: !Biases,
+    layerWeights :: !Weights
+    } deriving (Show, Eq)
 
 newtype Biases  = Biases {
-    unBiases :: [Float]
-    }
+    unBiases :: V.Vector Float
+    } deriving (Show, Eq)
 newtype Weights = Weights {
-    unWeights :: [[Float]]
-    }
+    unWeights :: V.Vector (V.Vector Float)
+    } deriving (Show, Eq)
 
-type WeightedInputs = [[Float]]
-type Activations    = [[Float]]
-type Deltas         = [[Float]]
+type WeightedInputs = V.Vector (V.Vector Float)
+type Activations    = V.Vector (V.Vector Float)
+type Deltas         = V.Vector (V.Vector Float)
 
 gauss :: Float -> IO Float
 gauss scale = do
@@ -40,15 +46,16 @@ gauss scale = do
     return $ scale * sqrt (-2 * log x1) * cos (2 * pi * x2)
 
 -- | Create a new neural network
-newBrain :: [Int] -> IO Brain
-newBrain szs@(_:ts) = do
-    let biases = map Biases $ flip replicate 1 <$> ts
-    weights <- zipWithM mkWeightVector szs ts
-    return . Brain $ zipWith Layer biases weights
+newBrain :: V.Vector Int -> IO Brain
+newBrain szs | not (V.null szs) = do
+    let ts = V.tail szs
+    let biases = fmap Biases $ flip V.replicate 1 <$> ts
+    weights <- V.zipWithM mkWeightVector szs ts
+    return . Brain $ V.zipWith Layer biases weights
   where
     mkWeightVector m n =
-        Weights <$> replicateM n (replicateM m $ gauss 0.01)
-newBrain []         = return $ Brain []
+        Weights <$> V.replicateM n (V.replicateM m $ gauss 0.01)
+newBrain _ = return $ Brain []
 
 relu :: Float -> Float
 relu = max 0
@@ -57,79 +64,121 @@ relu' :: Float -> Float
 relu' x | x < 0      = 0
         | otherwise  = 1
 
-zLayer :: [Float] -> Layer -> [Float]
-zLayer as (Layer bs wvs) =
-    zipWith (+) (unBiases bs) $ sum . zipWith (*) as <$> unWeights wvs
+zLayer :: V.Vector Float -> Layer -> V.Vector Float
+zLayer as (Layer bs wvs) = V.generate (V.length rawBiases) $ \i ->
+    let bias      = rawBiases  V.! i
+        weightVec = rawWeights V.! i
+        len = min (V.length weightVec) (V.length as)
+        x  = foldr (\j total -> total + (as V.! j) * (weightVec V.! i))
+                   0
+                   ([0..len-1] :: [Int])
+    in bias + x
+    -- The above code is an optimized form of:
+    -- > V.zipWith (+) rawBiases $ sum . V.zipWith (*) as <$> rawWeights
+    -- It does only one vector allocation
+  where
+    rawWeights = unWeights wvs
+    rawBiases  = unBiases bs
 
-feed :: [Float] -> Brain -> [Float]
+feed :: V.Vector Float -> Brain -> V.Vector Float
 feed xs = foldl' (((relu <$>) .) . zLayer) xs . brainLayers
 
 -- | Returns a list of (WeightedInputs, Activations) of each
 --   layer, from last layer to first
-revaz :: [Float] -> Brain -> (WeightedInputs, Activations)
+revaz :: V.Vector Float -> Brain -> (WeightedInputs, Activations)
 revaz xs = foldl' f ([xs], []) . brainLayers
   where
-    f (avs@(av:_), zs) (Layer bs wms) =
-        let zs' = zLayer av (Layer bs wms)
-        in ((relu <$> zs'):avs, zs':zs)
+    f (avs, zs) layer@(Layer bs wms) =
+        let av  = V.head avs
+            zs' = zLayer av layer
+        in (V.cons (relu <$> zs') avs, V.cons zs' zs)
 
 dCost :: Float -> Float -> Float
 dCost !a !y | y == 1 && a >= y = 0
             | otherwise        = a - y
 
-deltas :: [Float] -> [Float] -> Brain -> (Activations, Deltas)
+deltas :: V.Vector Float -> V.Vector Float -> Brain -> (Activations, Deltas)
 deltas xv yv brain =
-    let (avs@(av:_), zv:zvs) = revaz xv brain
-        delta0      = zipWith (*) (zipWith dCost av yv) (relu' <$> zv)
-        activations = reverse avs
+    let (avsi, zvsi) = revaz xv brain
+        av          = V.head avsi
+        zv          = V.head zvsi
+        zvs         = V.tail zvsi
+
+        delta0      = V.zipWith (*) (V.zipWith dCost av yv) (relu' <$> zv)
+        activations = V.reverse avsi
         deltas'     = f
-            (transpose . unWeights . layerWeights <$> reverse layers)
+            (transposeVect . unWeights . layerWeights <$> V.reverse layers)
             zvs
             [delta0]
     in (activations, deltas')
   where
     layers = brainLayers brain
 
-    f _ [] dvs = dvs
-    f (wm:wms) (zv:zvs) dvs@(dv:_) = f wms zvs . (:dvs) $
-      zipWith (*) [sum $ zipWith (*) row dv | row <- wm] (relu' <$> zv)
+    f _    zvsi dvsi | V.null zvsi = dvsi
+    f wmsi zvsi dvsi =
+        let wm  = V.head wmsi
+            dv  = V.head dvsi
+            zv  = V.head zvsi
+            wms = V.tail wmsi
+            zvs = V.tail zvsi
+            dvs = V.tail dvsi
+        in f wms zvs . (`V.cons` dvs) $
+            V.zipWith (*) [sum $ V.zipWith (*) row dv | row <- wm]
+                          (relu' <$> zv)
+
+transposeVect :: V.Vector (V.Vector Float) -> V.Vector (V.Vector Float)
+transposeVect vect
+    | V.null vect          = []
+    | V.null (V.head vect) = transposeVect (V.tail vect)
+    | otherwise            =
+        let vh   = V.head vect
+            x    = V.head vh
+            xs   = V.tail vh
+            xss  = V.tail vect
+        in (x `V.cons` [V.head h | h <- xss]) `V.cons`
+           transposeVect (xs `V.cons` [V.tail t | t <- xss])
 
 -- | Learning rate
 eta :: Float
 eta = 0.002
 
-descend :: [Float] -> [Float] -> [Float]
-descend av dv = zipWith (-) av ((eta *) <$> dv)
+descend :: V.Vector Float -> V.Vector Float -> V.Vector Float
+descend av dv = V.zipWith (-) av ((eta *) <$> dv)
 
-learn :: [Float] -> [Float] -> Brain -> Brain
+learn :: V.Vector Float -> V.Vector Float -> Brain -> Brain
 learn xv yv brain@(Brain layers) =
     let (avs, dvs) = deltas xv yv brain
-        biases = map Biases $ zipWith descend
+        biases = Biases <$> V.zipWith descend
                                 (unBiases . layerBiases <$> layers)
                                 dvs
     in Brain $
-       zipWith Layer biases . map Weights $
-       zipWith3 (\wvs av dv ->
-       zipWith (\wv d -> descend wv ((d*) <$> av)) wvs dv)
-       (unWeights . layerWeights <$> layers) avs dvs
+        V.zipWith Layer biases . fmap Weights $
+        V.zipWith3
+            (\wvs av dv -> V.zipWith (\wv d -> descend wv ((d*) <$> av)) wvs dv)
+            (unWeights . layerWeights <$> layers)
+            avs
+            dvs
 
 -------------
 -- Display --
 -------------
 
-getImage :: Num a => BS.ByteString -> Int64 -> [a]
+getImage :: Num a => BS.ByteString -> Int64 -> V.Vector Float
 getImage s n =
     fromIntegral .
     BS.index s .
     (n*28^(2::Word8) + 16 +) <$> [0..28^(2::Word8) - 1]
 
-getX :: Fractional a => BS.ByteString -> Int64 -> [a]
-getX     s n = (/ 256) <$> getImage s n
+getX :: BS.ByteString -> Int64 -> V.Vector Float
+getX     s n =
+    let img = getImage s n
+    in (img :: V.Vector Float) `deepseq` fmap (/ 256) img
+--(/ 256) <$> getImage s n
 
 getLabel :: Num a => BS.ByteString -> Int64 -> a
 getLabel s n = fromIntegral $ BS.index s (n + 8)
 
-getY :: Fractional a => BS.ByteString -> Int64 -> [a]
+getY :: Fractional a => BS.ByteString -> Int64 -> V.Vector a
 getY     s n =
     fromIntegral . fromEnum . (getLabel s n ==) <$> [(0::Word8)..9]
 
@@ -164,41 +213,42 @@ myMain = do
     testI  <- testImages
     testL  <- testLabels
     -- Smart brain
-    let smart = smartBrain 2 brain trainI trainL
+    let smart = smartBrain 1 brain trainI trainL
+    print smart
     -- Example
     n <- (`mod` testLen) <$> randomIO
     putStrLn . renderImage n =<< testImages
     print $ bestGuess (getX testI n) smart
     -- Summary
     guesses' <- guesses smart testI
-    putStr . show . sum $ fromEnum <$> zipWith (==) guesses' (answers testL)
+    putStr . show . sum $ fromEnum <$> V.zipWith (==) guesses' (answers testL)
     putStrLn $ "/" ++ show testLen
   where
-    trainLen = 15000
-    testLen  = 9999
+    trainLen = 15000 --15000
+    testLen  = 999--9999
 
     guesses brain testI =
-        return $ map (\n -> bestGuess (getX testI n) brain) [0..testLen]
+        return $ V.map (\n -> bestGuess (getX testI n) brain) [0..testLen]
 
-    answers testL = getLabel testL <$> [0..testLen]
-        
-    bestGuess :: [Float] -> Brain -> Float
+    answers testL = getLabel testL <$> V.fromList [0..testLen]
+
+    bestGuess :: V.Vector Float -> Brain -> Float
     bestGuess image brain = bestOf $ feed image brain
 
-    bestOf :: [Float] -> Float
-    bestOf = fst . maximumBy (comparing snd) . zip [0..]
+    bestOf :: V.Vector Float -> Float
+    bestOf xs = fst . maximumBy (comparing snd) . V.zip [0..fromIntegral (length xs)] $ xs
 
     smartBrain n b trainI trainL =
       foldl'
         (\br -> const $ foldl'
             (\b' n -> learn (getX trainI n) (getY trainL n) b')
             br
-            [0..trainLen])
+            ([0..trainLen] :: [Int64]))
         b
-        [1..n]
+        ([1..n] :: [Int])
 
     renderImage n testI = unlines $
-        take 28 $ take 28 <$> iterate (drop 28) (render <$> getImage testI n)
+        take 28 $ take 28 <$> iterate (drop 28) (render . floor <$> V.toList (getImage testI n))
 
 mainNeural :: IO ()
 mainNeural = do
