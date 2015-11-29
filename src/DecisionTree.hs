@@ -4,8 +4,9 @@
 module DecisionTree where
 
 import Data.List
-import Data.Maybe (listToMaybe, maybeToList)
+import Data.Maybe (isJust, listToMaybe, maybeToList)
 import Control.Monad (join)
+import Control.Applicative ((<|>))
 import Control.DeepSeq
 
 import qualified Data.Text as T
@@ -22,24 +23,51 @@ instance NFData b => NFData (DTree a b) where
     rnf (Leaf lbl)     = rnf lbl
 
 -- | Use decision tree to label a datum
-applyTree :: DTree a b -> a -> [b]
-applyTree (Leaf lbl)           _ = maybeToList lbl
+applyTree :: DTree a b -> a -> Maybe b
+applyTree (Leaf lbl)           _ = lbl
 applyTree (Node attr children) x =
+    join .
+    fmap (flip applyTree x . fst) $
+    correctBranch
+  where
+    correctBranch =
+        let a = filter (($ x) . snd . snd) childrenTests
+        in if null a && not (null childrenTests)
+                then Just $ head childrenTests
+                else listToMaybe a
+
+    childrenTests = zip children (attrTests attr)
+{-
     join .
     fmap (flip applyTree x . fst) .
     filter (($ x) . snd . snd) $
     zip children (attrTests attr)
+-}
+
+growTree :: Ord b => [Attr a] -> Training a b -> DTree a b
+growTree = growTree' Nothing
 
 -- | Create a decision tree from attributes and training data
-growTree :: forall a b. Ord b => [Attr a] -> Training a b -> DTree a b
-growTree []    []       = Leaf Nothing
-growTree []    training = Leaf $ mostCommonLabel training
-growTree attrs training
+growTree' :: forall a b. Ord b =>
+    Maybe b -> [Attr a] -> Training a b -> DTree a b
+growTree' def []    []       = Leaf def
+growTree' def []    training = Leaf $ mostCommonLabel training <|> def
+growTree' def attrs training
     -- If it's a leaf, label it with most common label
-    | isLeaf    = Node best $ map (Leaf . mostCommonLabel) grouped
+    | isLeaf    = Node best $ map growLeaf    grouped
     -- Otherwise, recursively grow tree
-    | otherwise = Node best $ map (growTree attrs')        grouped
+    | otherwise = Node best $ map growSubTree grouped
   where
+    growLeaf :: Training a b -> DTree a b
+    growLeaf train =
+        let defLbl = mostCommonLabel train <|> defLabel
+        in Leaf defLbl
+
+    growSubTree :: Training a b -> DTree a b
+    growSubTree train =
+        let defLbl = mostCommonLabel train <|> defLabel
+        in growTree' defLbl attrs' train
+
     -- | It's a leaf if only one (or zero) attribute tests
     --   have members
     isLeaf :: Bool
@@ -48,6 +76,9 @@ growTree attrs training
     -- | Grouped by label
     grouped :: [Training a b]
     grouped = groupTraining best training
+
+    defLabel :: Maybe b
+    defLabel = mostCommonLabel training <|> def
 
     attrs' :: [Attr a]
     attrs' = delete best attrs

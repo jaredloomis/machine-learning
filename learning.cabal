@@ -21,6 +21,7 @@ library
     base >=4.8 && <4.9,
     random,
     bytestring, text, vector,
+    parsec,
     deepseq,
     zlib
   hs-source-dirs:   src
