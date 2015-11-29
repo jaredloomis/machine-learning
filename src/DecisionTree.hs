@@ -4,7 +4,7 @@
 module DecisionTree where
 
 import Data.List
-import Data.Maybe (listToMaybe)
+import Data.Maybe (listToMaybe, maybeToList)
 import Control.Monad (join)
 import Control.DeepSeq
 
@@ -22,11 +22,11 @@ instance NFData b => NFData (DTree a b) where
     rnf (Leaf lbl)     = rnf lbl
 
 -- | Use decision tree to label a datum
-applyTree :: DTree a b -> a -> Maybe b
-applyTree (Leaf lbl)           _ = lbl
+applyTree :: DTree a b -> a -> [b]
+applyTree (Leaf lbl)           _ = maybeToList lbl
 applyTree (Node attr children) x =
-    join . fmap (flip applyTree x . fst) .
-    listToMaybe .
+    join .
+    fmap (flip applyTree x . fst) .
     filter (($ x) . snd . snd) $
     zip children (attrTests attr)
 
@@ -55,7 +55,7 @@ growTree attrs training
     best :: Attr a
     best = bestAttr training attrs
 
-groupTraining :: Ord b => Attr a -> Training a b -> [Training a b]
+groupTraining :: Eq b => Attr a -> Training a b -> [Training a b]
 groupTraining attr training =
     map (\(_, testAttr) -> filter (testAttr . datum) training)
         (attrTests attr)

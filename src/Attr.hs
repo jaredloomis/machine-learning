@@ -28,7 +28,10 @@ data Attr a = Attr {
     }
 
 instance Show (Attr a) where
-    show = show . attrName
+    show (Attr name tests) =
+        "Attr { attrName = " ++ show name ++ ", " ++
+        "attrTests = " ++ show (map fst tests) ++
+        " }"
 instance Eq (Attr a) where
     x == y = attrName x == attrName y
 
