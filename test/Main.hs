@@ -36,7 +36,8 @@ main = do
     putStrLn "%)"
   where
     correct testD results = length . filter id $
-        zipWith (\defined infered -> malignant defined == fromJust infered)
+        zipWith
+            (\defined inferred -> maybe False (malignant defined ==) inferred)
                 testD
                 results
 
@@ -76,9 +77,9 @@ cancerTraining = do
     return [datum :=> malignant datum | datum <- dat]
 
 trainData :: IO [Cancer]
-trainData = take 50 <$> cancerData
+trainData = take 500 <$> cancerData
 testData  :: IO [Cancer]
-testData  = drop 50 <$> cancerData
+testData  = drop 500 <$> cancerData
 
 cancerData :: IO [Cancer]
 cancerData = do
@@ -102,6 +103,8 @@ data Cancer = Cancer {
     malignant       :: !Bool
     } deriving (Show, Eq)
 
+-- Parser
+
 cancers :: Parser [Cancer]
 cancers = many (cancer <* endOfLine)
 
@@ -116,6 +119,9 @@ cancer = do
 
     maybeVal :: (Read i, Integral i) => Parser i
     maybeVal = decimal <|> (char '?' *> return 0)
+
+floating :: (Read f, Floating f) => Parser f
+floating = read <$> many1 (digit <|> oneOf "-.e")
 
 decimal :: (Read i, Integral i) => Parser i
 decimal = read <$> many1 digit

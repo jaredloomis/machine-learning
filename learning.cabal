@@ -29,7 +29,7 @@ library
 
   ghc-options: -O2 -flate-dmd-anal -fexpose-all-unfoldings -optlo-O3 -optlc-O3
 
-executable test
+executable smalltest
   build-depends:
     base >=4.8 && <4.9,
     parsec,
@@ -38,3 +38,13 @@ executable test
 
   hs-source-dirs: test
   main-is:        Main.hs
+
+executable wdbc
+  build-depends:
+    base >=4.8 && <4.9,
+    parsec,
+    text,
+    learning
+
+  hs-source-dirs: test
+  main-is:        Wdbc.hs
